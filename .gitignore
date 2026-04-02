@@ -1,0 +1,22 @@
+# Input/output Excel files (may contain PII)
+*.xlsx
+
+# Keep the build doc
+!Caseload_Report_BuildDoc_v1.docx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
