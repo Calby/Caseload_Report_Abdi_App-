@@ -39,7 +39,7 @@ INPUT_DIR_DATA_REPORT_CARD = os.path.join("input", "data_report_card")
 INPUT_DIR_LEGAL_REFERRAL = os.path.join("input", "legal_referral")
 CONFIG_DIR_STAFF_ROSTER = os.path.join("config", "staff_roster")
 CONFIG_SITE_TAB_MAPPING = os.path.join("config", "site_tab_mapping.csv")
-CONFIG_PROGRAM_EXCLUSIONS = os.path.join("config", "program_exclusions.xlsx")
+CONFIG_PROGRAM_VALIDATION = os.path.join("config", "program_validation.xlsx")
 OUTPUT_DIR = "output"
 
 # Column renames applied to the Data Report Card
@@ -299,81 +299,73 @@ def load_site_tab_mapping():
     return rows
 
 
-def load_program_exclusions():
-    """Load program exclusions from config/program_exclusions.xlsx.
+def load_program_validation():
+    """Load per-program, per-field validation rules from config/program_validation.xlsx.
 
-    Supports exact and pattern-based matching via the 'Match Type' column:
-        exact    — Program Name must match exactly (default if column missing)
-        contains — Program Name contains the value (case-insensitive)
+    Each row specifies a program (exact or contains match) and which fields
+    should be validated (Yes) or blanked out (No) for that program.
+
+    Validation columns: Connection With SOAR, Current Receive ShallowSub,
+    Referred From HUDVASH, Last 90 Day Recert, Received Legal Assistance,
+    Housed Not Housed.
 
     Returns:
-        dict with keys:
-            "non_ssvf_exact": set of exact program names
-            "non_ssvf_contains": list of substring patterns
-            "skip_warning_exact": set of exact program names
-            "skip_warning_contains": list of substring patterns
-        Falls back to the hardcoded NON_SSVF_PROGRAMS list if the file doesn't exist.
+        list of dicts, each with keys:
+            "program": str (program name or pattern)
+            "match_type": "exact" or "contains"
+            "fields": dict of {field_name: bool} where False = blank out
+        Returns None if the file doesn't exist (falls back to hardcoded logic).
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    xlsx_path = os.path.join(script_dir, CONFIG_PROGRAM_EXCLUSIONS)
-
-    exclusions = {
-        "non_ssvf_exact": set(),
-        "non_ssvf_contains": [],
-        "skip_warning_exact": set(),
-        "skip_warning_contains": [],
-    }
+    xlsx_path = os.path.join(script_dir, CONFIG_PROGRAM_VALIDATION)
 
     if not os.path.isfile(xlsx_path):
-        logger.info(
-            "No program_exclusions.xlsx found — using hardcoded NON_SSVF_PROGRAMS"
-        )
-        exclusions["non_ssvf_exact"] = set(NON_SSVF_PROGRAMS)
-        return exclusions
+        logger.info("No program_validation.xlsx found — using hardcoded defaults")
+        return None
 
-    logger.info("Reading program exclusions: %s", xlsx_path)
+    logger.info("Reading program validation: %s", xlsx_path)
     df = pd.read_excel(xlsx_path, engine="openpyxl")
     df.columns = df.columns.str.strip()
 
-    if "Program Name" not in df.columns or "Exclusion Type" not in df.columns:
-        logger.warning(
-            "program_exclusions.xlsx missing required columns "
-            "(Program Name, Exclusion Type) — using hardcoded list"
-        )
-        exclusions["non_ssvf_exact"] = set(NON_SSVF_PROGRAMS)
-        return exclusions
+    if "Program Name" not in df.columns:
+        logger.warning("program_validation.xlsx missing 'Program Name' column — skipping")
+        return None
 
+    field_columns = [
+        "Connection With SOAR",
+        "Current Receive ShallowSub",
+        "Referred From HUDVASH",
+        "Last 90 Day Recert",
+        "Received Legal Assistance",
+        "Housed Not Housed",
+    ]
+
+    rules = []
     for _, row in df.iterrows():
         prog = str(row["Program Name"]).strip()
-        exc_type = str(row["Exclusion Type"]).strip().lower()
-        match_type = str(row.get("Match Type", "exact")).strip().lower()
         if not prog or prog == "nan":
             continue
+
+        match_type = str(row.get("Match Type", "exact")).strip().lower()
         if match_type == "nan" or not match_type:
             match_type = "exact"
 
-        if exc_type == "non_ssvf":
-            if match_type == "contains":
-                exclusions["non_ssvf_contains"].append(prog)
+        fields = {}
+        for col in field_columns:
+            if col in df.columns:
+                val = str(row.get(col, "Yes")).strip().lower()
+                fields[col] = val not in ("no", "n", "false", "0")
             else:
-                exclusions["non_ssvf_exact"].add(prog)
-        elif exc_type == "skip_ssvf_warning":
-            if match_type == "contains":
-                exclusions["skip_warning_contains"].append(prog)
-            else:
-                exclusions["skip_warning_exact"].add(prog)
+                fields[col] = True  # default: validate
 
-    total_non_ssvf = len(exclusions["non_ssvf_exact"]) + len(exclusions["non_ssvf_contains"])
-    total_skip = len(exclusions["skip_warning_exact"]) + len(exclusions["skip_warning_contains"])
-    logger.info(
-        "  Loaded %d non_ssvf exclusions (%d exact, %d contains), "
-        "%d skip_warning exclusions",
-        total_non_ssvf,
-        len(exclusions["non_ssvf_exact"]),
-        len(exclusions["non_ssvf_contains"]),
-        total_skip,
-    )
-    return exclusions
+        rules.append({
+            "program": prog,
+            "match_type": match_type,
+            "fields": fields,
+        })
+
+    logger.info("  Loaded %d program validation rules", len(rules))
+    return rules
 
 
 def load_data_report_card(filepath):
@@ -449,7 +441,7 @@ def load_legal_referral(filepath):
 # ---------------------------------------------------------------------------
 
 
-def process_main_sheet(drc, office_location, legal, staff_roster=None, program_exclusions=None):
+def process_main_sheet(drc, office_location, legal, staff_roster=None, program_validation=None):
     """Process the main 'All' sheet.
 
     Args:
@@ -457,18 +449,11 @@ def process_main_sheet(drc, office_location, legal, staff_roster=None, program_e
         office_location: Series of Current Office Location values (aligned to drc index)
         legal: Cleaned Legal Services Referral DataFrame
         staff_roster: Optional dict mapping login names to full names and job types
-        program_exclusions: Optional dict from load_program_exclusions()
+        program_validation: Optional list of validation rules from load_program_validation()
 
     Returns:
         tuple: (Processed All-tab DataFrame, aligned office_location Series)
     """
-    if program_exclusions is None:
-        program_exclusions = {
-            "non_ssvf_exact": set(NON_SSVF_PROGRAMS),
-            "non_ssvf_contains": [],
-            "skip_warning_exact": set(),
-            "skip_warning_contains": [],
-        }
     df = drc.copy()
 
     # ── Step 1: Rename columns and replace Event values ──
@@ -553,52 +538,79 @@ def process_main_sheet(drc, office_location, legal, staff_roster=None, program_e
         logger.warning("'Days since Last Recert/Update' not found — Last 90 Day Recert will be blank")
         df["Last 90 Day Recert"] = pd.NaT
 
-    # ── Step 5: Blank out fields for non-SSVF programs (from config) ──
-    non_ssvf_exact = program_exclusions.get("non_ssvf_exact", set())
-    non_ssvf_contains = program_exclusions.get("non_ssvf_contains", [])
-    skip_exact = program_exclusions.get("skip_warning_exact", set())
-    skip_contains = program_exclusions.get("skip_warning_contains", [])
-
-    # Build non-SSVF mask: exact matches OR contains matches
+    # ── Step 5: Apply per-program validation rules (from config) ──
+    # Determines which fields to blank out on a per-program basis.
+    # Fields set to "No" in program_validation.xlsx get blanked.
     pn = df["Program Name"].fillna("")
-    non_ssvf_mask = pn.isin(non_ssvf_exact)
-    for pattern in non_ssvf_contains:
-        non_ssvf_mask = non_ssvf_mask | pn.str.contains(pattern, case=False, na=False)
 
-    blank_columns = ["Current Receive ShallowSub", "Referred From HUDVASH", "Connection With SOAR"]
-    for col in blank_columns:
-        if col in df.columns:
-            df.loc[non_ssvf_mask, col] = ""
+    # Map output column names to what gets blanked
+    VALIDATION_FIELD_MAP = {
+        "Connection With SOAR": ("Connection With SOAR", ""),
+        "Current Receive ShallowSub": ("Current Receive ShallowSub", ""),
+        "Referred From HUDVASH": ("Referred From HUDVASH", ""),
+        "Last 90 Day Recert": ("Last 90 Day Recert", pd.NaT),
+        "Received Legal Assistance": ("Received Legal Assistance", ""),
+        "Housed Not Housed": ("Housed Not Housed", ""),
+    }
+    # Days since Last Recert/Update is blanked alongside Last 90 Day Recert
 
-    if "Last 90 Day Recert" in df.columns:
-        df.loc[non_ssvf_mask, "Last 90 Day Recert"] = pd.NaT
-    if "Days since Last Recert/Update" in df.columns:
-        df.loc[non_ssvf_mask, "Days since Last Recert/Update"] = pd.NA
+    if program_validation:
+        covered_programs = set()
+        total_blanked = 0
 
-    if non_ssvf_mask.any():
-        logger.info("Non-SSVF exclusions applied: %d rows", non_ssvf_mask.sum())
+        for rule in program_validation:
+            pattern = rule["program"]
+            match_type = rule["match_type"]
+            fields = rule["fields"]
 
-    # Heuristic warning: flag programs that don't match any known SSVF keyword
-    # and aren't covered by any exclusion rule
-    def _is_excluded(prog_name):
-        if prog_name in non_ssvf_exact or prog_name in skip_exact:
-            return True
-        for p in non_ssvf_contains + skip_contains:
-            if p.lower() in prog_name.lower():
-                return True
-        return False
+            # Build mask for this rule
+            if match_type == "contains":
+                mask = pn.str.contains(pattern, case=False, na=False)
+            else:
+                mask = pn == pattern
 
-    all_programs = df["Program Name"].unique()
-    for prog in all_programs:
-        if _is_excluded(prog):
-            continue
-        has_keyword = any(kw in str(prog) for kw in SSVF_KEYWORDS)
-        if not has_keyword:
-            logger.warning(
-                "Program '%s' does not match any SSVF keyword and is not in "
-                "program_exclusions.xlsx — verify if exclusion is needed",
-                prog,
-            )
+            if not mask.any():
+                continue
+
+            # Track which programs are covered by validation rules
+            covered_programs.update(pn[mask].unique())
+
+            # Blank out fields where validation is "No"
+            for field_name, validate in fields.items():
+                if validate:
+                    continue  # Yes = keep real data
+                col_name, blank_val = VALIDATION_FIELD_MAP.get(field_name, (None, None))
+                if col_name and col_name in df.columns:
+                    df.loc[mask, col_name] = blank_val
+                    total_blanked += mask.sum()
+                # Also blank Days since Last Recert/Update when Recert is No
+                if field_name == "Last 90 Day Recert" and "Days since Last Recert/Update" in df.columns:
+                    df.loc[mask, "Days since Last Recert/Update"] = pd.NA
+
+        logger.info("Validation rules applied: %d programs covered", len(covered_programs))
+
+        # Warn about programs not covered by any validation rule
+        all_programs = pn.unique()
+        for prog in all_programs:
+            if prog in covered_programs:
+                continue
+            has_keyword = any(kw in str(prog) for kw in SSVF_KEYWORDS)
+            if not has_keyword:
+                logger.warning(
+                    "Program '%s' has no validation rule in program_validation.xlsx "
+                    "and does not match any SSVF keyword — verify if it needs one",
+                    prog,
+                )
+    else:
+        # Fallback: hardcoded non-SSVF behavior (blanks all SSVF fields)
+        non_ssvf_mask = pn.isin(NON_SSVF_PROGRAMS)
+        for col in ["Current Receive ShallowSub", "Referred From HUDVASH", "Connection With SOAR"]:
+            if col in df.columns:
+                df.loc[non_ssvf_mask, col] = ""
+        if "Last 90 Day Recert" in df.columns:
+            df.loc[non_ssvf_mask, "Last 90 Day Recert"] = pd.NaT
+        if "Days since Last Recert/Update" in df.columns:
+            df.loc[non_ssvf_mask, "Days since Last Recert/Update"] = pd.NA
 
     # ── Step 6: VLOOKUP — Received Legal Assistance ──
     legal_lookup = legal.rename(
@@ -909,12 +921,12 @@ def main(data_report_card=None, legal_referral=None, output_path=None):
     # Load config files
     staff_roster = load_staff_roster()
     site_tab_mapping = load_site_tab_mapping()
-    program_exclusions = load_program_exclusions()
+    program_validation = load_program_validation()
 
     # Process the main sheet
     logger.info("Processing main sheet...")
     df_all, office_loc_aligned = process_main_sheet(
-        drc, office_location, legal, staff_roster, program_exclusions
+        drc, office_location, legal, staff_roster, program_validation
     )
 
     # Create site tabs

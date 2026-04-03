@@ -133,30 +133,29 @@ The GUI is a single `CaseloadReportApp` class. Key methods:
   - `location_contains` — Office Location contains value
   - `exclude_contains` — Exclude programs containing value
   - `require_contains` — Require programs containing value
-- **Program exclusions**: Edit `config/program_exclusions.xlsx` (see below)
+- **Program validation**: Edit `config/program_validation.xlsx` (see below)
 
-### Program Exclusions (`config/program_exclusions.xlsx`)
+### Program Validation (`config/program_validation.xlsx`)
 
-This Excel file controls which programs get SSVF-related fields blanked out
-(SOAR, ShallowSub, HUDVASH, Recert) and which programs should be silenced
-from heuristic warnings. **No code changes or rebuild needed** — just edit
-the Excel and re-run.
+This Excel file gives you per-program, per-field control over which report
+fields get validated (show real data) or blanked out. **No code changes or
+rebuild needed** — just edit the Excel and re-run.
 
 #### Columns
 
 | Column | Required | Description |
 |--------|----------|-------------|
 | Program Name | Yes | The program name or keyword to match |
-| Exclusion Type | Yes | What action to take (see below) |
 | Match Type | No | `exact` (default) or `contains` |
+| Connection With SOAR | No | `Yes` = show data, `No` = blank |
+| Current Receive ShallowSub | No | `Yes` = show data, `No` = blank |
+| Referred From HUDVASH | No | `Yes` = show data, `No` = blank |
+| Last 90 Day Recert | No | `Yes` = show data, `No` = blank (also blanks Days since Last Recert/Update) |
+| Received Legal Assistance | No | `Yes` = show data, `No` = blank |
+| Housed Not Housed | No | `Yes` = show data, `No` = blank |
 | Notes | No | Free-text description (informational only) |
 
-#### Exclusion Types
-
-| Exclusion Type | Effect |
-|----------------|--------|
-| `non_ssvf` | Blanks out SOAR, ShallowSub, HUDVASH, Last 90 Day Recert, and Days since Last Recert/Update for matching programs |
-| `skip_ssvf_warning` | Suppresses the log warning for programs that don't match SSVF keywords. Does not change any data. |
+If a validation column is missing or blank, it defaults to `Yes` (validate).
 
 #### Match Types
 
@@ -165,34 +164,37 @@ the Excel and re-run.
 | `exact` | Program Name must match the value exactly | `Tampa-THHI-CDBG DAP CES 1107` matches only that one program |
 | `contains` | Program Name contains the value (case-insensitive) | `EHA` matches `Charlotte-VA Supportive Services-SSVF-EHA`, `Orlando-SSVF-EHA`, etc. |
 
-If the Match Type column is missing or blank, it defaults to `exact`.
-
 #### Examples
 
-| Program Name | Exclusion Type | Match Type | Notes |
-|---|---|---|---|
-| All-County-VA-Suicide-Prevention 1114 | non_ssvf | exact | Specific program |
-| Charlotte County-SHIP-RRH 1305 | non_ssvf | exact | SHIP program |
-| Tampa-THHI-CDBG DAP CES 1107 | non_ssvf | exact | CDBG program |
-| EHA | non_ssvf | contains | All EHA programs |
-| Some Known Program | skip_ssvf_warning | exact | Suppress warning only |
+| Program Name | Match Type | SOAR | ShallowSub | HUDVASH | Recert | Legal | Housed | Notes |
+|---|---|---|---|---|---|---|---|---|
+| All-County-VA-Suicide-Prevention 1114 | exact | No | No | No | No | No | No | Blank all fields |
+| Charlotte County-SHIP-RRH 1305 | exact | No | No | No | No | Yes | Yes | SHIP RRH — keep Legal + Housed |
+| Tampa-THHI-CDBG DAP CES 1107 | exact | No | No | No | No | No | No | CDBG — blank all |
+| EHA | contains | No | No | No | No | Yes | Yes | All EHA programs — keep Legal + Housed |
 
 #### Common Tasks
 
-**Add a specific program to exclude:**
-1. Open `config/program_exclusions.xlsx` in Excel
-2. Add a row: Program Name = full program name, Exclusion Type = `non_ssvf`, Match Type = `exact`
-3. Save and re-run
+**Blank specific fields for a program:**
+1. Open `config/program_validation.xlsx` in Excel
+2. Add a row with the program name
+3. Set each field column to `Yes` (keep data) or `No` (blank out)
+4. Save and re-run
 
-**Exclude all programs matching a keyword:**
-1. Add a row: Program Name = the keyword (e.g., `SHIP`), Exclusion Type = `non_ssvf`, Match Type = `contains`
-2. This will match any program with that keyword anywhere in its name
+**Blank fields for all programs matching a keyword:**
+1. Add a row with Match Type = `contains` and the keyword as the Program Name
+2. Example: Program Name = `EHA`, Match Type = `contains` — this matches every
+   program with "EHA" anywhere in its name
 
-**Stop a warning from appearing:**
-1. Add a row: Program Name = the program name, Exclusion Type = `skip_ssvf_warning`, Match Type = `exact`
-2. The program will still be processed normally, but the warning log will be suppressed
+**Add a new field to blank for an existing program:**
+1. Find the row in the Excel and change the field from `Yes` to `No`
 
-**Fallback:** If the Excel file is missing or has the wrong columns, the script falls back to a hardcoded list of 3 programs built into the code.
+**Programs not in the file:** If a program is not matched by any row, all
+fields show their real data (nothing blanked). Programs that don't match
+any SSVF keyword and aren't in the file will trigger a log warning.
+
+**Fallback:** If the Excel file is missing, the script falls back to a
+hardcoded list that blanks all SSVF fields for 3 known non-SSVF programs.
 
 ---
 

@@ -3,7 +3,7 @@
 
 # Keep the build doc and config files
 !Caseload_Report_BuildDoc_v1.docx
-!config/program_exclusions.xlsx
+!config/program_validation.xlsx
 
 # Python
 __pycache__/
