@@ -353,10 +353,12 @@ def load_program_validation():
         fields = {}
         for col in field_columns:
             if col in df.columns:
-                val = str(row.get(col, "Yes")).strip().lower()
-                fields[col] = val not in ("no", "n", "false", "0")
-            else:
-                fields[col] = True  # default: validate
+                val = str(row.get(col, "")).strip().lower()
+                # "No" = blank this field. Blank/empty/anything else = pass through data
+                if val in ("no", "n", "false", "0"):
+                    fields[col] = False
+                # else: not in fields dict = no rule, pass through
+            # Column not in Excel = no rule, pass through
 
         rules.append({
             "program": prog,
@@ -575,10 +577,11 @@ def process_main_sheet(drc, office_location, legal, staff_roster=None, program_v
             # Track which programs are covered by validation rules
             covered_programs.update(pn[mask].unique())
 
-            # Blank out fields where validation is "No"
+            # Blank out only fields explicitly set to "No"
+            # Fields not in the dict = no rule, pass through real data
             for field_name, validate in fields.items():
-                if validate:
-                    continue  # Yes = keep real data
+                if validate is not False:
+                    continue
                 col_name, blank_val = VALIDATION_FIELD_MAP.get(field_name, (None, None))
                 if col_name and col_name in df.columns:
                     df.loc[mask, col_name] = blank_val
