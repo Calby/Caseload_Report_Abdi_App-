@@ -145,8 +145,13 @@ FOX_DROP_COLUMNS = [
 HEADER_FILL = PatternFill(start_color="1B3A5C", end_color="1B3A5C", fill_type="solid")
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 ALT_ROW_FILL = PatternFill(start_color="F2F6FA", end_color="F2F6FA", fill_type="solid")
+RED_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+RED_FONT = Font(color="FFFFFF", bold=True)
 DATE_FORMAT = "MM/DD/YYYY"
 DATE_COLUMNS = {"Begin Date", "Move-In Date", "Last 90 Day Recert"}
+CENTER_COLUMNS = {"# Enrolled Family Members"}
+RED_THRESHOLD_COLUMNS = {"Days With no Service/Contact"}
+RED_THRESHOLD_DAYS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +352,10 @@ def process_main_sheet(drc, office_location, legal):
     # ── Step 5: N/A replacement for non-SSVF programs ──
     non_ssvf_mask = df["Program Name"].isin(NON_SSVF_PROGRAMS)
 
-    na_columns = ["Current Receive ShallowSub", "Referred From HUDVASH", "Connection With SOAR"]
-    for col in na_columns:
+    blank_columns = ["Current Receive ShallowSub", "Referred From HUDVASH", "Connection With SOAR"]
+    for col in blank_columns:
         if col in df.columns:
-            df.loc[non_ssvf_mask, col] = "N/A"
+            df.loc[non_ssvf_mask, col] = ""
 
     if "Last 90 Day Recert" in df.columns:
         df.loc[non_ssvf_mask, "Last 90 Day Recert"] = pd.NaT
@@ -380,7 +385,7 @@ def process_main_sheet(drc, office_location, legal):
     unmatched_legal = df["Received Legal Assistance"].isna().sum()
     matched_legal = len(df) - unmatched_legal
     logger.info("Legal referral: %d matched, %d unmatched -> N/A", matched_legal, unmatched_legal)
-    df["Received Legal Assistance"] = df["Received Legal Assistance"].fillna("N/A")
+    df["Received Legal Assistance"] = df["Received Legal Assistance"].fillna("")
 
     # ── Step 7: Days With no Service/Contact (from Last Case Note Date Per Prog) ──
     if "Last Case Note Date Per Prog" in df.columns:
@@ -419,7 +424,7 @@ def process_main_sheet(drc, office_location, legal):
         lambda x: "Housed" if pd.notna(x) else "Not Housed"
     )
     non_rrh_mask = ~df["Program Name"].str.contains("RRH", case=False, na=False)
-    df.loc[non_rrh_mask, "Housed Not Housed"] = "N/A"
+    df.loc[non_rrh_mask, "Housed Not Housed"] = ""
 
     # ── Step 9: PQI Review and Peer Review (Yes / No / blank) ──
     for col in ["PQI Review", "Peer Review"]:
@@ -545,7 +550,17 @@ def apply_formatting(wb):
         # Freeze top row
         ws.freeze_panes = "A2"
 
-        # Auto-fit column widths and format date columns
+        # Auto-filter on header row
+        if ws.max_column and ws.max_row > 1:
+            last_col_letter = get_column_letter(ws.max_column)
+            ws.auto_filter.ref = f"A1:{last_col_letter}{ws.max_row}"
+
+        # Build a header-name-to-column-index map for targeted formatting
+        header_map = {}
+        for col_idx, cell in enumerate(ws[1], 1):
+            header_map[str(cell.value or "")] = col_idx
+
+        # Auto-fit column widths and format date/center/red columns
         for col_idx, col_cells in enumerate(ws.columns, 1):
             col_cells = list(col_cells)
             header_text = str(col_cells[0].value or "")
@@ -563,11 +578,27 @@ def apply_formatting(wb):
                     if cell.value is not None:
                         cell.number_format = DATE_FORMAT
 
-        # Alternating row shading
+            # Center-align specific columns
+            if header_text in CENTER_COLUMNS:
+                for cell in col_cells[1:]:
+                    cell.alignment = Alignment(horizontal="center")
+
+            # Red fill for Days With no Service/Contact > 30
+            if header_text in RED_THRESHOLD_COLUMNS:
+                for cell in col_cells[1:]:
+                    try:
+                        if cell.value is not None and float(cell.value) > RED_THRESHOLD_DAYS:
+                            cell.fill = RED_FILL
+                            cell.font = RED_FONT
+                    except (ValueError, TypeError):
+                        pass
+
+        # Alternating row shading (skip cells already marked red)
         for row_idx in range(2, ws.max_row + 1):
             if row_idx % 2 == 0:
                 for cell in ws[row_idx]:
-                    cell.fill = ALT_ROW_FILL
+                    if cell.fill != RED_FILL:
+                        cell.fill = ALT_ROW_FILL
 
 
 # ---------------------------------------------------------------------------
