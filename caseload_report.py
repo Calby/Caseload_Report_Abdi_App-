@@ -211,6 +211,7 @@ def load_data_report_card(filepath):
     """
     logger.info("Reading Data Report Card: %s", filepath)
     df = pd.read_excel(filepath, engine="openpyxl")
+    df.columns = df.columns.str.strip()  # Clean whitespace from column names
     logger.info("  Loaded %d rows, %d columns", len(df), len(df.columns))
 
     # Validate critical columns
@@ -242,6 +243,7 @@ def load_legal_referral(filepath):
     """
     logger.info("Reading Legal Services Referral: %s", filepath)
     df = pd.read_excel(filepath, engine="openpyxl")
+    df.columns = df.columns.str.strip()  # Clean whitespace from column names
     logger.info("  Loaded %d rows", len(df))
 
     # Validate required columns
@@ -312,27 +314,35 @@ def process_main_sheet(drc, office_location, legal):
 
     # ── Step 3: Drop unused columns ──
     available_keep = [c for c in KEEP_COLUMNS_FROM_DRC if c in df.columns]
+    missing_keep = [c for c in KEEP_COLUMNS_FROM_DRC if c not in df.columns]
+    if missing_keep:
+        logger.warning("Expected columns not found in Data Report Card: %s", missing_keep)
+        logger.info("  Available columns after rename: %s", list(df.columns))
     df = df[available_keep].copy()
     df.reset_index(drop=True, inplace=True)
 
     # ── Step 4: Calculate Last 90 Day Recert ──
     today = date.today()
 
-    def calc_recert(days_val):
-        if pd.isna(days_val):
-            return pd.NaT
-        try:
-            return today - timedelta(days=int(days_val))
-        except (ValueError, TypeError):
-            return pd.NaT
+    if "Days since Last Recert/Update" in df.columns:
+        def calc_recert(days_val):
+            if pd.isna(days_val):
+                return pd.NaT
+            try:
+                return today - timedelta(days=int(days_val))
+            except (ValueError, TypeError):
+                return pd.NaT
 
-    df["Last 90 Day Recert"] = df["Days since Last Recert/Update"].apply(calc_recert)
+        df["Last 90 Day Recert"] = df["Days since Last Recert/Update"].apply(calc_recert)
 
-    # Insert at position 9 (after Assigned Staff, before Days since Last Recert/Update)
-    cols = list(df.columns)
-    cols.remove("Last 90 Day Recert")
-    cols.insert(9, "Last 90 Day Recert")
-    df = df[cols]
+        # Insert at position 9 (after Assigned Staff, before Days since Last Recert/Update)
+        cols = list(df.columns)
+        cols.remove("Last 90 Day Recert")
+        cols.insert(9, "Last 90 Day Recert")
+        df = df[cols]
+    else:
+        logger.warning("'Days since Last Recert/Update' not found — Last 90 Day Recert will be blank")
+        df["Last 90 Day Recert"] = pd.NaT
 
     # ── Step 5: N/A replacement for non-SSVF programs ──
     non_ssvf_mask = df["Program Name"].isin(NON_SSVF_PROGRAMS)
@@ -342,8 +352,10 @@ def process_main_sheet(drc, office_location, legal):
         if col in df.columns:
             df.loc[non_ssvf_mask, col] = "N/A"
 
-    df.loc[non_ssvf_mask, "Last 90 Day Recert"] = pd.NaT
-    df.loc[non_ssvf_mask, "Days since Last Recert/Update"] = pd.NA
+    if "Last 90 Day Recert" in df.columns:
+        df.loc[non_ssvf_mask, "Last 90 Day Recert"] = pd.NaT
+    if "Days since Last Recert/Update" in df.columns:
+        df.loc[non_ssvf_mask, "Days since Last Recert/Update"] = pd.NA
 
     # Heuristic warning: flag programs that don't match any known SSVF keyword
     # and aren't in the explicit non-SSVF list
