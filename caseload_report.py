@@ -115,9 +115,10 @@ SITE_TAB_ORDER = [
     "All",
     "Charlotte",
     "Charlotte Shelter",
+    "Citrus",
     "FOX",
     "GPD",
-    "MidFlorida",
+    "Lake",
     "Orlando",
     "Pasco",
     "Pinellas",
@@ -129,6 +130,9 @@ SITE_TAB_ORDER = [
     "SouthWest",
     "Tampa",
 ]
+
+# Tabs that get a Location column inserted at position 10 (from Current Office Location)
+LOCATION_TABS = {"Citrus", "Lake"}
 
 # Columns dropped from the FOX tab (reduced 12-column layout)
 FOX_DROP_COLUMNS = [
@@ -469,21 +473,17 @@ def create_site_tabs(df_all, office_location):
         OrderedDict of {tab_name: DataFrame} in SITE_TAB_ORDER
     """
     pn = df_all["Program Name"].fillna("")
+    ol = office_location.fillna("")
 
     # Define filter masks for each site tab
     filters = {
         "All": pd.Series(True, index=df_all.index),
         "Charlotte": pn.str.startswith("Charlotte") & ~pn.str.contains("Care Center"),
         "Charlotte Shelter": pn.str.startswith("Charlotte") & pn.str.contains("Care Center"),
+        "Citrus": ol.str.contains("Citrus", case=False, na=False),
         "FOX": pn.str.startswith("All-County-VA-Suicide") | pn.str.startswith("Bob Woodruff"),
         "GPD": pn.str.startswith("Pre-Housing") | pn.str.startswith("Retention"),
-        "MidFlorida": (
-            pn.str.startswith("Lake Mid")
-            | pn.str.startswith("MidFlorida")
-            | pn.str.startswith("Citrus")
-            | pn.str.startswith("Hernando")
-            | pn.str.startswith("Sumter")
-        ),
+        "Lake": ol.str.contains("Lake", case=False, na=False),
         "Orlando": pn.str.startswith("Orlando"),
         "Pasco": pn.str.startswith("Pasco"),
         "Pinellas": pn.str.startswith("Pinellas"),
@@ -509,7 +509,7 @@ def create_site_tabs(df_all, office_location):
             drop_cols = [c for c in FOX_DROP_COLUMNS if c in tab_df.columns]
             tab_df = tab_df.drop(columns=drop_cols)
 
-        elif tab_name == "MidFlorida":
+        elif tab_name in LOCATION_TABS:
             # Add Location column at position 9 (column 10 in 1-indexed)
             loc_values = office_location.reindex(df_all[mask].index).reset_index(drop=True)
             tab_df.insert(9, "Location", loc_values)
