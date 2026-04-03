@@ -141,7 +141,7 @@ class CaseloadReportApp:
         ).pack()
 
         tk.Label(
-            header, text="SVdP CARES \u2014 Data Systems Team",
+            header, text="CaseWorthy Export \u2014 Caseload Reports / PQI / Peer Review",
             font=FONT_SUBTITLE, fg=SUBTITLE_FG, bg=HEADER_BG
         ).pack()
 
@@ -278,6 +278,12 @@ class CaseloadReportApp:
             footer,
             text=f"SVdP CARES \u00b7 Data Systems \u00b7 v{APP_VERSION}",
             font=FONT_FOOTER, fg="#666", bg=FOOTER_BG
+        ).pack()
+
+        tk.Label(
+            footer,
+            text="\u2b50 Crafted by the legendary James Calby \u2014 Data Systems Analyst Extraordinaire \u2b50",
+            font=FONT_FOOTER, fg="#888", bg=FOOTER_BG
         ).pack()
 
     # ── Browse handlers ──────────────────────────────────────────────────
