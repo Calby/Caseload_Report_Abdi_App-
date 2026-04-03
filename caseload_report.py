@@ -2,15 +2,21 @@
 Caseload Report Automation Script
 St. Vincent de Paul CARES — Data Systems Team
 
-Replaces the manual process of combining three CaseWorthy Excel exports
+Replaces the manual process of combining CaseWorthy Excel exports
 into a formatted, multi-tab Caseload Report workbook.
 
 Usage:
-    python caseload_report.py <data_report_card> <client_not_served> <legal_referral> [-o output.xlsx]
+    python caseload_report.py [-o output.xlsx]
+
+Place input files in these folders (script auto-detects .xlsx files):
+    input/data_report_card/    — Data Report Card export
+    input/legal_referral/      — Legal Services Referral export
 """
 
 import argparse
+import glob
 import logging
+import os
 import sys
 from collections import OrderedDict
 from datetime import date, timedelta
@@ -27,6 +33,10 @@ logger = logging.getLogger(__name__)
 # CONFIGURABLE CONSTANTS
 # ---------------------------------------------------------------------------
 
+# Input folder paths (relative to script directory)
+INPUT_DIR_DATA_REPORT_CARD = os.path.join("input", "data_report_card")
+INPUT_DIR_LEGAL_REFERRAL = os.path.join("input", "legal_referral")
+
 # Column renames applied to the Data Report Card
 COLUMN_RENAMES = {
     "Case Manager": "Assigned Staff",
@@ -35,7 +45,8 @@ COLUMN_RENAMES = {
 }
 
 # Columns kept from the Data Report Card after dropping unused ones (Step 3).
-# These are the 14 direct columns that survive into the final output.
+# These are the 15 direct columns that survive into the final output.
+# "Last Case Note Date Per Prog" is used to derive Days With no Service/Contact.
 # "Current Office Location" is extracted separately for the MidFlorida tab.
 KEEP_COLUMNS_FROM_DRC = [
     "Client ID",
@@ -51,6 +62,7 @@ KEEP_COLUMNS_FROM_DRC = [
     "Current Receive ShallowSub",
     "Referred From HUDVASH",
     "Connection With SOAR",
+    "Last Case Note Date Per Prog",
     "PQI Review",
     "Peer Review",
 ]
@@ -79,7 +91,13 @@ ALL_COLUMNS_ORDERED = [
 ]
 
 # Critical columns that MUST exist in the Data Report Card
-CRITICAL_DRC_COLUMNS = ["Event", "Client ID", "Program Name", "Case Manager"]
+CRITICAL_DRC_COLUMNS = [
+    "Event",
+    "Client ID",
+    "Program Name",
+    "Case Manager",
+    "Last Case Note Date Per Prog",
+]
 
 # Non-SSVF programs — these get N/A for SOAR, ShallowSub, HUDVASH, and Recert.
 # Update this list as new non-SSVF programs are added to CaseWorthy.
@@ -132,12 +150,61 @@ DATE_COLUMNS = {"Begin Date", "Move-In Date", "Last 90 Day Recert"}
 
 
 # ---------------------------------------------------------------------------
+# FILE DISCOVERY
+# ---------------------------------------------------------------------------
+
+
+def find_xlsx_in_folder(folder_path):
+    """Find a single .xlsx file in the given folder.
+
+    Args:
+        folder_path: Path to the input folder
+
+    Returns:
+        Path to the .xlsx file
+
+    Raises:
+        FileNotFoundError: If no .xlsx files found
+        ValueError: If multiple .xlsx files found
+    """
+    # Resolve relative to script directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    abs_folder = os.path.join(script_dir, folder_path)
+
+    if not os.path.isdir(abs_folder):
+        raise FileNotFoundError(
+            f"Input folder not found: {abs_folder}\n"
+            f"Create it and place your .xlsx export inside."
+        )
+
+    xlsx_files = glob.glob(os.path.join(abs_folder, "*.xlsx"))
+    # Exclude temp files (Excel lock files start with ~$)
+    xlsx_files = [f for f in xlsx_files if not os.path.basename(f).startswith("~$")]
+
+    if not xlsx_files:
+        raise FileNotFoundError(
+            f"No .xlsx files found in {abs_folder}\n"
+            f"Place your CaseWorthy export in this folder."
+        )
+
+    if len(xlsx_files) > 1:
+        raise ValueError(
+            f"Multiple .xlsx files found in {abs_folder}:\n"
+            + "\n".join(f"  - {os.path.basename(f)}" for f in xlsx_files)
+            + "\nPlease keep only the file you want to process."
+        )
+
+    logger.info("Found: %s", xlsx_files[0])
+    return xlsx_files[0]
+
+
+# ---------------------------------------------------------------------------
 # LOADER FUNCTIONS
 # ---------------------------------------------------------------------------
 
 
 def load_data_report_card(filepath):
-    """Load and validate the Data Report Card export (Input 1).
+    """Load and validate the Data Report Card export.
 
     Returns:
         tuple: (DataFrame with all columns, Series of Current Office Location)
@@ -164,77 +231,8 @@ def load_data_report_card(filepath):
     return df, office_location
 
 
-def load_client_not_served(filepath):
-    """Load the Client Not Served report (Input 2).
-
-    Handles merged cells and variable header row position by using openpyxl
-    to unmerge cells and auto-detect the header row containing 'Client ID'.
-
-    Returns:
-        DataFrame with columns: Client ID, Program Name, Days since Last Activity,
-        Relationship to HoH
-    """
-    logger.info("Reading Client Not Served: %s", filepath)
-    wb = load_workbook(filepath)
-    ws = wb.active
-
-    # Unmerge all merged cell ranges
-    for merge_range in list(ws.merged_cells.ranges):
-        ws.unmerge_cells(str(merge_range))
-
-    # Auto-detect header row by scanning for "Client ID"
-    header_row = None
-    for row in ws.iter_rows(min_row=1, max_row=50, max_col=20):
-        for cell in row:
-            if cell.value and str(cell.value).strip() == "Client ID":
-                header_row = cell.row
-                break
-        if header_row:
-            break
-
-    if header_row is None:
-        raise ValueError(
-            "Could not find 'Client ID' header in Client Not Served report "
-            "(searched rows 1-50). The file format may have changed."
-        )
-
-    logger.info("  Detected header at row %d", header_row)
-
-    # Extract headers from the detected row
-    headers = [cell.value for cell in ws[header_row]]
-
-    # Extract data rows below the header
-    data = []
-    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
-        # Stop at completely empty rows
-        if all(v is None for v in row):
-            continue
-        data.append(row)
-
-    df = pd.DataFrame(data, columns=headers)
-    logger.info("  Loaded %d data rows", len(df))
-
-    # Keep only required columns
-    keep_cols = ["Client ID", "Program Name", "Days since Last Activity", "Relationship to HoH"]
-    available = [c for c in keep_cols if c in df.columns]
-    missing = [c for c in keep_cols if c not in df.columns]
-    if missing:
-        logger.warning("Client Not Served missing columns: %s", missing)
-
-    df = df[available]
-
-    # Convert Client ID to numeric
-    if "Client ID" in df.columns:
-        df["Client ID"] = pd.to_numeric(df["Client ID"], errors="coerce")
-        df = df.dropna(subset=["Client ID"])
-        df["Client ID"] = df["Client ID"].astype("Int64")
-
-    wb.close()
-    return df
-
-
 def load_legal_referral(filepath):
-    """Load the Legal Services Referral report (Input 3).
+    """Load the Legal Services Referral report.
 
     Filters for Approved referrals, converts Client ID to integer,
     and relabels status as 'Received'.
@@ -276,13 +274,12 @@ def load_legal_referral(filepath):
 # ---------------------------------------------------------------------------
 
 
-def process_main_sheet(drc, office_location, cns, legal):
-    """Process the main 'All' sheet through Steps 1-11 of the build doc.
+def process_main_sheet(drc, office_location, legal):
+    """Process the main 'All' sheet.
 
     Args:
         drc: Raw Data Report Card DataFrame
         office_location: Series of Current Office Location values (aligned to drc index)
-        cns: Cleaned Client Not Served DataFrame
         legal: Cleaned Legal Services Referral DataFrame
 
     Returns:
@@ -362,7 +359,7 @@ def process_main_sheet(drc, office_location, cns, legal):
                 prog,
             )
 
-    # ── Step 8: VLOOKUP — Received Legal Assistance ──
+    # ── Step 6: VLOOKUP — Received Legal Assistance ──
     legal_lookup = legal.rename(
         columns={"CW Client ID": "Client ID", "Referral Status": "Received Legal Assistance"}
     )
@@ -373,41 +370,49 @@ def process_main_sheet(drc, office_location, cns, legal):
     logger.info("Legal referral: %d matched, %d unmatched -> N/A", matched_legal, unmatched_legal)
     df["Received Legal Assistance"] = df["Received Legal Assistance"].fillna("N/A")
 
-    # ── Step 9: INDEX/MATCH — Days With no Service/Contact ──
-    cns_lookup = cns.rename(
-        columns={"Days since Last Activity": "Days With no Service/Contact"}
-    )
-    # Deduplicate CNS on compound key before merging
-    if "Days With no Service/Contact" in cns_lookup.columns:
-        cns_lookup = cns_lookup.drop_duplicates(subset=["Client ID", "Program Name"], keep="first")
-        df = df.merge(
-            cns_lookup[["Client ID", "Program Name", "Days With no Service/Contact"]],
-            on=["Client ID", "Program Name"],
-            how="left",
+    # ── Step 7: Days With no Service/Contact (from Last Case Note Date Per Prog) ──
+    if "Last Case Note Date Per Prog" in df.columns:
+        df["Last Case Note Date Per Prog"] = pd.to_datetime(
+            df["Last Case Note Date Per Prog"], errors="coerce"
         )
-        unmatched_cns = df["Days With no Service/Contact"].isna().sum()
+
+        def calc_days_no_service(note_date):
+            if pd.isna(note_date):
+                return pd.NA
+            try:
+                return (pd.Timestamp(today) - note_date).days
+            except (ValueError, TypeError):
+                return pd.NA
+
+        df["Days With no Service/Contact"] = df["Last Case Note Date Per Prog"].apply(
+            calc_days_no_service
+        )
+
+        has_note = df["Last Case Note Date Per Prog"].notna().sum()
+        no_note = df["Last Case Note Date Per Prog"].isna().sum()
         logger.info(
-            "Client Not Served: %d matched, %d unmatched",
-            len(df) - unmatched_cns,
-            unmatched_cns,
+            "Days With no Service/Contact: %d calculated, %d blank (no case note date)",
+            has_note,
+            no_note,
         )
+
+        # Drop the intermediate column — not part of final output
+        df.drop(columns=["Last Case Note Date Per Prog"], inplace=True)
     else:
         df["Days With no Service/Contact"] = pd.NA
-        logger.warning("Could not match Days With no Service/Contact — column missing from CNS data")
+        logger.warning("'Last Case Note Date Per Prog' column not found — Days With no Service/Contact will be blank")
 
-    # ── Step 10: Housed / Not Housed ──
+    # ── Step 8: Housed / Not Housed ──
     df["Housed Not Housed"] = df["Move-In Date"].apply(
         lambda x: "Housed" if pd.notna(x) else "Not Housed"
     )
     non_rrh_mask = ~df["Program Name"].str.contains("RRH", case=False, na=False)
     df.loc[non_rrh_mask, "Housed Not Housed"] = "N/A"
 
-    # ── Step 11: PQI Review and Peer Review ──
+    # ── Step 9: PQI Review and Peer Review (Yes / No / blank) ──
     for col in ["PQI Review", "Peer Review"]:
         if col in df.columns:
-            df[col] = df[col].apply(
-                lambda x: "Yes" if pd.notna(x) and str(x).strip() != "" else ""
-            )
+            df[col] = df[col].apply(_normalize_yes_no)
 
     # ── Final column ordering ──
     final_cols = [c for c in ALL_COLUMNS_ORDERED if c in df.columns]
@@ -417,8 +422,27 @@ def process_main_sheet(drc, office_location, cns, legal):
     return df, office_loc_aligned
 
 
+def _normalize_yes_no(value):
+    """Normalize PQI/Peer Review values to Yes, No, or blank.
+
+    - Blank/null → blank ("")
+    - "Yes" (any case) → "Yes"
+    - "No" (any case) → "No"
+    - Any other non-blank value → "Yes"
+    """
+    if pd.isna(value) or str(value).strip() == "":
+        return ""
+    val = str(value).strip()
+    if val.lower() == "no":
+        return "No"
+    if val.lower() == "yes":
+        return "Yes"
+    # Any other non-blank value indicates the review was done
+    return "Yes"
+
+
 def create_site_tabs(df_all, office_location):
-    """Create the 16 site tabs from the All sheet data (Step 12).
+    """Create the 16 site tabs from the All sheet data.
 
     Args:
         df_all: Processed All-tab DataFrame (19 columns)
@@ -494,7 +518,7 @@ def create_site_tabs(df_all, office_location):
 
 
 def apply_formatting(wb):
-    """Apply visual formatting to the output workbook (Step 13).
+    """Apply visual formatting to the output workbook.
 
     Args:
         wb: openpyxl Workbook object (already written with data)
@@ -539,28 +563,32 @@ def apply_formatting(wb):
 # ---------------------------------------------------------------------------
 
 
-def main(input1, input2, input3, output_path=None):
+def main(data_report_card=None, legal_referral=None, output_path=None):
     """Run the full Caseload Report pipeline.
 
     Args:
-        input1: Path to Data_Report_Card_*.xlsx
-        input2: Path to Client_Not_Served_*.xlsx
-        input3: Path to Legal_Services_Referral_*.xlsx
+        data_report_card: Path to Data Report Card .xlsx (auto-detected if None)
+        legal_referral: Path to Legal Services Referral .xlsx (auto-detected if None)
         output_path: Output file path (default: Current_Caseload_{date}.xlsx)
     """
     if output_path is None:
         output_path = f"Current_Caseload_{date.today().isoformat()}.xlsx"
 
-    # Load all three input files
-    drc, office_location = load_data_report_card(input1)
-    cns = load_client_not_served(input2)
-    legal = load_legal_referral(input3)
+    # Auto-detect input files from folders if not specified
+    if data_report_card is None:
+        data_report_card = find_xlsx_in_folder(INPUT_DIR_DATA_REPORT_CARD)
+    if legal_referral is None:
+        legal_referral = find_xlsx_in_folder(INPUT_DIR_LEGAL_REFERRAL)
 
-    # Process the main sheet (Steps 1-11)
+    # Load input files
+    drc, office_location = load_data_report_card(data_report_card)
+    legal = load_legal_referral(legal_referral)
+
+    # Process the main sheet
     logger.info("Processing main sheet...")
-    df_all, office_loc_aligned = process_main_sheet(drc, office_location, cns, legal)
+    df_all, office_loc_aligned = process_main_sheet(drc, office_location, legal)
 
-    # Create site tabs (Step 12)
+    # Create site tabs
     logger.info("Creating site tabs...")
     tabs = create_site_tabs(df_all, office_loc_aligned)
 
@@ -570,7 +598,7 @@ def main(input1, input2, input3, output_path=None):
         for tab_name, tab_df in tabs.items():
             tab_df.to_excel(writer, sheet_name=tab_name, index=False)
 
-    # Reopen for formatting (Step 13)
+    # Reopen for formatting
     logger.info("Applying formatting...")
     wb = load_workbook(output_path)
     apply_formatting(wb)
@@ -584,14 +612,26 @@ if __name__ == "__main__":
         description="Generate SVdP CARES Caseload Report from CaseWorthy exports.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "Input folders (auto-detected):\n"
+            "  input/data_report_card/    — Place Data Report Card .xlsx here\n"
+            "  input/legal_referral/      — Place Legal Services Referral .xlsx here\n"
+            "\n"
             "Examples:\n"
-            "  python caseload_report.py Data_Report_Card.xlsx Client_Not_Served.xlsx Legal_Referral.xlsx\n"
-            "  python caseload_report.py input1.xlsx input2.xlsx input3.xlsx -o My_Report.xlsx\n"
+            "  python caseload_report.py\n"
+            "  python caseload_report.py -o My_Report.xlsx\n"
+            "  python caseload_report.py --drc report.xlsx --legal referral.xlsx\n"
         ),
     )
-    parser.add_argument("data_report_card", help="Path to Data_Report_Card_*.xlsx")
-    parser.add_argument("client_not_served", help="Path to Client_Not_Served_*.xlsx")
-    parser.add_argument("legal_referral", help="Path to Legal_Services_Referral_*.xlsx")
+    parser.add_argument(
+        "--drc",
+        default=None,
+        help="Path to Data Report Card .xlsx (default: auto-detect from input/data_report_card/)",
+    )
+    parser.add_argument(
+        "--legal",
+        default=None,
+        help="Path to Legal Services Referral .xlsx (default: auto-detect from input/legal_referral/)",
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -600,4 +640,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    main(args.data_report_card, args.client_not_served, args.legal_referral, args.output)
+    main(
+        data_report_card=args.drc,
+        legal_referral=args.legal,
+        output_path=args.output,
+    )

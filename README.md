@@ -1,6 +1,6 @@
 # Caseload Report Automation
 
-Python script that automates the SVdP CARES Caseload Report — replaces the manual process of combining three CaseWorthy Excel exports into a formatted, multi-tab workbook.
+Python script that automates the SVdP CARES Caseload Report — replaces the manual process of combining CaseWorthy Excel exports into a formatted, multi-tab workbook.
 
 ## Setup
 
@@ -10,30 +10,38 @@ pip install -r requirements.txt
 
 Requires Python 3.9+ with `pandas` and `openpyxl`.
 
+## Input Folder Structure
+
+Create the following folders and drop your CaseWorthy exports into them:
+
+```
+input/
+├── data_report_card/          — Data Report Card export (.xlsx)
+└── legal_referral/            — Legal Services Referral export (.xlsx)
+```
+
+Each folder should contain exactly one `.xlsx` file. The script auto-detects the file by extension, so the filename from CaseWorthy doesn't matter.
+
 ## Usage
 
 ```bash
-python caseload_report.py <data_report_card> <client_not_served> <legal_referral> [-o output.xlsx]
+# Auto-detect files from input folders (recommended)
+python caseload_report.py
+
+# Specify output filename
+python caseload_report.py -o Current_Caseload_2026-04-01.xlsx
+
+# Override input file paths directly
+python caseload_report.py --drc path/to/report.xlsx --legal path/to/referral.xlsx
 ```
 
 ### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `data_report_card` | Path to `Data_Report_Card_*.xlsx` (68-column export) |
-| `client_not_served` | Path to `Client_Not_Served_*.xlsx` (merged-cell report) |
-| `legal_referral` | Path to `Legal_Services_Referral_*.xlsx` |
+| `--drc` | Path to Data Report Card `.xlsx` (default: auto-detect from `input/data_report_card/`) |
+| `--legal` | Path to Legal Services Referral `.xlsx` (default: auto-detect from `input/legal_referral/`) |
 | `-o, --output` | Output file path (default: `Current_Caseload_{YYYY-MM-DD}.xlsx`) |
-
-### Example
-
-```bash
-python caseload_report.py \
-  Data_Report_Card_2026-04-01.xlsx \
-  Client_Not_Served_2026-04-01.xlsx \
-  Legal_Services_Referral_2026-04-01.xlsx \
-  -o Current_Caseload_2026-04-01.xlsx
-```
 
 ## Output
 
@@ -58,9 +66,15 @@ The script produces an Excel workbook with 16 tabs:
 | SouthWest | Fort Myers / Lee County |
 | Tampa | Tampa / Hillsborough County |
 
+## Key Details
+
+- **Days With no Service/Contact** is calculated from `Last Case Note Date Per Prog` in the Data Report Card (`TODAY() - Last Case Note Date Per Prog`). No separate Client Not Served report needed.
+- **PQI Review / Peer Review** columns show `Yes`, `No`, or blank.
+
 ## Configuration
 
 Edit the constants at the top of `caseload_report.py` to update:
 
 - `NON_SSVF_PROGRAMS` — programs that get N/A for SOAR, ShallowSub, HUDVASH fields
+- `INPUT_DIR_DATA_REPORT_CARD` / `INPUT_DIR_LEGAL_REFERRAL` — input folder paths
 - Site tab filter rules (in `create_site_tabs()`)
