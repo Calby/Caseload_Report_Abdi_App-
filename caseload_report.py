@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # Input folder paths (relative to script directory)
 INPUT_DIR_DATA_REPORT_CARD = os.path.join("input", "data_report_card")
 INPUT_DIR_LEGAL_REFERRAL = os.path.join("input", "legal_referral")
+OUTPUT_DIR = "output"
 
 # Column renames applied to the Data Report Card
 COLUMN_RENAMES = {
@@ -149,8 +150,8 @@ FOX_DROP_COLUMNS = [
 HEADER_FILL = PatternFill(start_color="1B3A5C", end_color="1B3A5C", fill_type="solid")
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 ALT_ROW_FILL = PatternFill(start_color="F2F6FA", end_color="F2F6FA", fill_type="solid")
-RED_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-RED_FONT = Font(color="FFFFFF", bold=True)
+RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+RED_FONT = Font(color="9C0006")
 DATE_FORMAT = "MM/DD/YYYY"
 DATE_COLUMNS = {"Begin Date", "Move-In Date", "Last 90 Day Recert"}
 CENTER_COLUMNS = {"# Enrolled Family Members"}
@@ -614,8 +615,15 @@ def main(data_report_card=None, legal_referral=None, output_path=None):
         legal_referral: Path to Legal Services Referral .xlsx (auto-detected if None)
         output_path: Output file path (default: Current_Caseload_{date}.xlsx)
     """
+    # Resolve output folder relative to script directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, OUTPUT_DIR)
+    os.makedirs(output_dir, exist_ok=True)
+
     if output_path is None:
-        output_path = f"Current_Caseload_{date.today().isoformat()}.xlsx"
+        output_path = os.path.join(output_dir, f"Current_Caseload_{date.today().isoformat()}.xlsx")
+    elif not os.path.isabs(output_path):
+        output_path = os.path.join(output_dir, output_path)
 
     # Auto-detect input files from folders if not specified
     if data_report_card is None:
