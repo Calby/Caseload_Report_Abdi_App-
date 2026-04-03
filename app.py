@@ -406,10 +406,11 @@ class CaseloadReportApp:
                 staff_roster = cr.load_staff_roster()
 
             site_tab_mapping = cr.load_site_tab_mapping()
+            program_exclusions = cr.load_program_exclusions()
 
             # Process
             df_all, office_loc_aligned = cr.process_main_sheet(
-                drc, office_location, legal, staff_roster
+                drc, office_location, legal, staff_roster, program_exclusions
             )
 
             # Create tabs

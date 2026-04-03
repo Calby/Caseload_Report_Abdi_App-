@@ -39,6 +39,7 @@ INPUT_DIR_DATA_REPORT_CARD = os.path.join("input", "data_report_card")
 INPUT_DIR_LEGAL_REFERRAL = os.path.join("input", "legal_referral")
 CONFIG_DIR_STAFF_ROSTER = os.path.join("config", "staff_roster")
 CONFIG_SITE_TAB_MAPPING = os.path.join("config", "site_tab_mapping.csv")
+CONFIG_PROGRAM_EXCLUSIONS = os.path.join("config", "program_exclusions.xlsx")
 OUTPUT_DIR = "output"
 
 # Column renames applied to the Data Report Card
@@ -298,6 +299,51 @@ def load_site_tab_mapping():
     return rows
 
 
+def load_program_exclusions():
+    """Load program exclusions from config/program_exclusions.xlsx.
+
+    Returns:
+        dict: {"non_ssvf": set of program names, "skip_ssvf_warning": set of program names}
+        Falls back to the hardcoded NON_SSVF_PROGRAMS list if the file doesn't exist.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    xlsx_path = os.path.join(script_dir, CONFIG_PROGRAM_EXCLUSIONS)
+
+    exclusions = {"non_ssvf": set(), "skip_ssvf_warning": set()}
+
+    if not os.path.isfile(xlsx_path):
+        logger.info(
+            "No program_exclusions.xlsx found — using hardcoded NON_SSVF_PROGRAMS"
+        )
+        exclusions["non_ssvf"] = set(NON_SSVF_PROGRAMS)
+        return exclusions
+
+    logger.info("Reading program exclusions: %s", xlsx_path)
+    df = pd.read_excel(xlsx_path, engine="openpyxl")
+    df.columns = df.columns.str.strip()
+
+    if "Program Name" not in df.columns or "Exclusion Type" not in df.columns:
+        logger.warning(
+            "program_exclusions.xlsx missing required columns "
+            "(Program Name, Exclusion Type) — using hardcoded list"
+        )
+        exclusions["non_ssvf"] = set(NON_SSVF_PROGRAMS)
+        return exclusions
+
+    for _, row in df.iterrows():
+        prog = str(row["Program Name"]).strip()
+        exc_type = str(row["Exclusion Type"]).strip().lower()
+        if prog and prog != "nan" and exc_type in exclusions:
+            exclusions[exc_type].add(prog)
+
+    logger.info(
+        "  Loaded %d non_ssvf exclusions, %d skip_ssvf_warning exclusions",
+        len(exclusions["non_ssvf"]),
+        len(exclusions["skip_ssvf_warning"]),
+    )
+    return exclusions
+
+
 def load_data_report_card(filepath):
     """Load and validate the Data Report Card export.
 
@@ -371,7 +417,7 @@ def load_legal_referral(filepath):
 # ---------------------------------------------------------------------------
 
 
-def process_main_sheet(drc, office_location, legal, staff_roster=None):
+def process_main_sheet(drc, office_location, legal, staff_roster=None, program_exclusions=None):
     """Process the main 'All' sheet.
 
     Args:
@@ -379,10 +425,13 @@ def process_main_sheet(drc, office_location, legal, staff_roster=None):
         office_location: Series of Current Office Location values (aligned to drc index)
         legal: Cleaned Legal Services Referral DataFrame
         staff_roster: Optional dict mapping login names to full names and job types
+        program_exclusions: Optional dict from load_program_exclusions()
 
     Returns:
         tuple: (Processed All-tab DataFrame, aligned office_location Series)
     """
+    if program_exclusions is None:
+        program_exclusions = {"non_ssvf": set(NON_SSVF_PROGRAMS), "skip_ssvf_warning": set()}
     df = drc.copy()
 
     # ── Step 1: Rename columns and replace Event values ──
@@ -467,8 +516,11 @@ def process_main_sheet(drc, office_location, legal, staff_roster=None):
         logger.warning("'Days since Last Recert/Update' not found — Last 90 Day Recert will be blank")
         df["Last 90 Day Recert"] = pd.NaT
 
-    # ── Step 5: N/A replacement for non-SSVF programs ──
-    non_ssvf_mask = df["Program Name"].isin(NON_SSVF_PROGRAMS)
+    # ── Step 5: Blank out fields for non-SSVF programs (from config) ──
+    non_ssvf_programs = program_exclusions.get("non_ssvf", set())
+    skip_warning_programs = program_exclusions.get("skip_ssvf_warning", set())
+
+    non_ssvf_mask = df["Program Name"].isin(non_ssvf_programs)
 
     blank_columns = ["Current Receive ShallowSub", "Referred From HUDVASH", "Connection With SOAR"]
     for col in blank_columns:
@@ -480,17 +532,21 @@ def process_main_sheet(drc, office_location, legal, staff_roster=None):
     if "Days since Last Recert/Update" in df.columns:
         df.loc[non_ssvf_mask, "Days since Last Recert/Update"] = pd.NA
 
+    if non_ssvf_programs:
+        logger.info("Non-SSVF exclusions applied: %d programs", non_ssvf_mask.sum())
+
     # Heuristic warning: flag programs that don't match any known SSVF keyword
-    # and aren't in the explicit non-SSVF list
+    # and aren't in any exclusion list
+    excluded_programs = non_ssvf_programs | skip_warning_programs
     all_programs = df["Program Name"].unique()
     for prog in all_programs:
-        if prog in NON_SSVF_PROGRAMS:
+        if prog in excluded_programs:
             continue
         has_keyword = any(kw in str(prog) for kw in SSVF_KEYWORDS)
         if not has_keyword:
             logger.warning(
                 "Program '%s' does not match any SSVF keyword and is not in "
-                "NON_SSVF_PROGRAMS — verify if N/A replacement is needed",
+                "program_exclusions.xlsx — verify if exclusion is needed",
                 prog,
             )
 
@@ -803,10 +859,13 @@ def main(data_report_card=None, legal_referral=None, output_path=None):
     # Load config files
     staff_roster = load_staff_roster()
     site_tab_mapping = load_site_tab_mapping()
+    program_exclusions = load_program_exclusions()
 
     # Process the main sheet
     logger.info("Processing main sheet...")
-    df_all, office_loc_aligned = process_main_sheet(drc, office_location, legal, staff_roster)
+    df_all, office_loc_aligned = process_main_sheet(
+        drc, office_location, legal, staff_roster, program_exclusions
+    )
 
     # Create site tabs
     logger.info("Creating site tabs...")

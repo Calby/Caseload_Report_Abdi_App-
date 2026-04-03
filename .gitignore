@@ -1,8 +1,9 @@
 # Input/output Excel files (may contain PII)
 *.xlsx
 
-# Keep the build doc
+# Keep the build doc and config files
 !Caseload_Report_BuildDoc_v1.docx
+!config/program_exclusions.xlsx
 
 # Python
 __pycache__/
