@@ -172,3 +172,14 @@ Tab order: All, Charlotte, Charlotte Shelter, FOX, GPD, MidFlorida, Orlando, Pas
 2. **Conditional formatting for Recert** — Red (>=90 days), Yellow (70-89), Green (<70), Gray (none) (Low priority)
 3. **Non-SSVF list maintenance** — Consider deriving from program name patterns vs hardcoded list (Medium priority)
 4. **SSRS replacement (Phase 2)** — Long-term goal to replace with a single SSRS report (Future)
+
+## GUI App
+
+The app is built with tkinter and packaged via PyInstaller. See `documents/developer_guide.md` for build/run instructions and `documents/gui_design_reference.md` for the reusable design spec.
+
+### App Footer
+
+```
+SVdP CARES · Data Systems · v1.0
+⭐ Crafted by the legendary James Calby — Data Systems Analyst Extraordinaire ⭐
+```
