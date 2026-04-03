@@ -2,7 +2,7 @@
 
 ## Overview
 
-Python automation script that replaces a manual 30-45 minute Excel workflow for generating the St. Vincent de Paul CARES Caseload Report. The script takes three CaseWorthy Excel exports as input and produces a formatted, multi-tab workbook as output.
+Python automation script that replaces a manual 30-45 minute Excel workflow for generating the St. Vincent de Paul CARES Caseload Report. The script takes two CaseWorthy Excel exports as input and produces a formatted, multi-tab workbook as output.
 
 ## Tech Stack
 
@@ -12,13 +12,22 @@ Python automation script that replaces a manual 30-45 minute Excel workflow for 
 
 ## Input Files
 
-The script accepts three `.xlsx` files exported from CaseWorthy:
+The script accepts two `.xlsx` files exported from CaseWorthy, placed in separate input folders:
 
-| Input | Pattern | Description |
-|-------|---------|-------------|
-| Input 1 | `Data_Report_Card_*.xlsx` | Primary caseload data (68 columns, one row per assessment event per client per program) |
-| Input 2 | `Client_Not_Served_*.xlsx` | Days since last activity per client/program. Has merged cells (rows 1-25), hidden columns — requires preprocessing |
-| Input 3 | `Legal_Services_Referral_*.xlsx` | Legal referral status — filter for 'Approved' only, convert Client ID to integer |
+```
+input/
+├── data_report_card/          — Drop Data Report Card export here
+│   └── Data_Report_Card_*.xlsx
+└── legal_referral/            — Drop Legal Services Referral export here
+    └── Legal_Services_Referral_*.xlsx
+```
+
+| Input | Folder | Description |
+|-------|--------|-------------|
+| Data Report Card | `input/data_report_card/` | Primary caseload data (68+ columns, one row per assessment event per client per program). Also provides `Last Case Note Date Per Prog` for service gap calculation. |
+| Legal Services Referral | `input/legal_referral/` | Legal referral status — filter for 'Approved' only, convert Client ID to integer |
+
+**Note:** The Client Not Served report is no longer needed. Days With no Service/Contact is now calculated directly from the `Last Case Note Date Per Prog` column in the Data Report Card as `TODAY() - Last Case Note Date Per Prog`.
 
 ## Output
 
@@ -30,30 +39,28 @@ The script accepts three `.xlsx` files exported from CaseWorthy:
 
 ```
 caseload_report.py
-├── load_data_report_card(filepath) → DataFrame
-├── load_client_not_served(filepath) → DataFrame
+├── find_xlsx_in_folder(folder_path) → str
+├── load_data_report_card(filepath) → (DataFrame, Series)
 ├── load_legal_referral(filepath) → DataFrame
-├── process_main_sheet(drc, cns, legal) → DataFrame
-├── create_site_tabs(df_all) → dict[str, DataFrame]
+├── process_main_sheet(drc, office_location, legal) → (DataFrame, Series)
+├── create_site_tabs(df_all, office_location) → dict[str, DataFrame]
 ├── apply_formatting(workbook) → None
-└── main(input1, input2, input3, output_path)
+└── main(data_report_card, legal_referral, output_path)
 ```
 
 ## Processing Steps (Must Execute in Order)
 
-1. **Load Data Report Card** — Read all 68 columns. Rename: `Case Manager` → `Assigned Staff`, `Receiving Shallow Subsidy` → `Current Receive ShallowSub`, `Referred From HUD-VASH` → `Referred From HUDVASH`. Replace `At Exit` → `ZAT Exit` in Event column.
+1. **Load Data Report Card** — Read all columns. Rename: `Case Manager` → `Assigned Staff`, `Receiving Shallow Subsidy` → `Current Receive ShallowSub`, `Referred From HUD-VASH` → `Referred From HUDVASH`. Replace `At Exit` → `ZAT Exit` in Event column.
 2. **Sort & Deduplicate** — Sort by Event, Client ID, Program Name (all A→Z). Drop duplicates on `[Client ID, Program Name]` keeping first (entry over exit).
-3. **Drop Unused Columns** — Keep only 14 direct columns from Data Report Card. Also drop Event, Position Type, End Date, Assign Begin/End Date.
+3. **Drop Unused Columns** — Keep only 15 direct columns from Data Report Card (including `Last Case Note Date Per Prog`). Also drop Event, Position Type, End Date, Assign Begin/End Date.
 4. **Calculate Last 90 Day Recert** — `TODAY() - Days since Last Recert/Update`. Format as MM/DD/YYYY. Insert at column 10.
 5. **N/A Replacement for Non-SSVF** — Replace SOAR, ShallowSub, HUDVASH with `N/A`. Clear Recert fields. See Non-SSVF list below.
-6. **Load Client Not Served** — Unmerge cells, strip header rows (1-25), unhide columns. Keep: Client ID, Program Name, Days since Last Activity, Relationship to HoH.
-7. **Load Legal Services Referral** — Keep: CW Client ID, Referral Status. Filter for `Approved`, change label to `Received`.
-8. **VLOOKUP — Legal Assistance** — Match on Client ID. Write `Received` if found, else `N/A`.
-9. **INDEX/MATCH — Days With no Service/Contact** — Match on BOTH Client ID AND Program Name (compound key). Return Days since Last Activity.
-10. **Housed/Not Housed** — If Move-In Date blank → `Not Housed`, else `Housed`. Override to `N/A` for non-RRH programs (no `RRH` in Program Name).
-11. **PQI Review & Peer Review** — If any non-blank value → `Yes`, else leave blank. These are the last two columns (18 & 19).
-12. **Create Site Tabs** — Filter All sheet into 15 site tabs per mapping rules. FOX uses 12-column reduced layout. MidFlorida adds Location column at position 10.
-13. **Apply Formatting** — Dark blue headers (#1B3A5C), white text, freeze row 1, auto-fit columns, MM/DD/YYYY dates, optional alternating row shading (#F2F6FA).
+6. **VLOOKUP — Legal Assistance** — Match on Client ID. Write `Received` if found, else `N/A`.
+7. **Calculate Days With no Service/Contact** — `TODAY() - Last Case Note Date Per Prog`. Blank if no case note date exists.
+8. **Housed/Not Housed** — If Move-In Date blank → `Not Housed`, else `Housed`. Override to `N/A` for non-RRH programs (no `RRH` in Program Name).
+9. **PQI Review & Peer Review** — `Yes` if value is present/yes, `No` if value is "No", blank if null/empty. These are the last two columns (18 & 19).
+10. **Create Site Tabs** — Filter All sheet into 15 site tabs per mapping rules. FOX uses 12-column reduced layout. MidFlorida adds Location column at position 10.
+11. **Apply Formatting** — Dark blue headers (#1B3A5C), white text, freeze row 1, auto-fit columns, MM/DD/YYYY dates, alternating row shading (#F2F6FA).
 
 ## Final Output Columns (19 Columns — "All" Tab)
 
@@ -74,10 +81,10 @@ caseload_report.py
 | 13 | Referred From HUDVASH | Renamed from Referred From HUD-VASH |
 | 14 | Connection With SOAR | Direct |
 | 15 | Received Legal Assistance | VLOOKUP from Legal Services Referral |
-| 16 | Days With no Service/Contact | INDEX/MATCH from Client Not Served |
+| 16 | Days With no Service/Contact | Calculated: TODAY() - Last Case Note Date Per Prog |
 | 17 | Housed Not Housed | Calculated from Move-In Date |
-| 18 | PQI Review | Yes if value present, else blank |
-| 19 | Peer Review | Yes if value present, else blank |
+| 18 | PQI Review | Yes, No, or blank |
+| 19 | Peer Review | Yes, No, or blank |
 
 ## Non-SSVF Program List (Configurable)
 
@@ -116,13 +123,14 @@ Tab order: All, Charlotte, Charlotte Shelter, FOX, GPD, MidFlorida, Orlando, Pas
 
 ## Key Implementation Notes
 
-- **Client Not Served** has merged cells and hidden columns — use `openpyxl` to unmerge before loading into pandas
+- **Days With no Service/Contact** is derived from `Last Case Note Date Per Prog` in the Data Report Card — no separate Client Not Served report needed
 - **Deduplication** keeps first occurrence after sorting (entry records beat exit records due to ZAT Exit rename)
 - **Legal Services join** is a left merge on Client ID (not all clients have referrals)
-- **Client Not Served join** is on compound key: Client ID + Program Name
 - **Site tab mapping** should be configurable via a dictionary of `{tab_name: filter_function}`
 - **MidFlorida** needs the `Current Office Location` column from raw data (renamed to `Location`)
+- **PQI/Peer Review** values are normalized to `Yes`, `No`, or blank
 - **PII warning:** Output contains Client ID, First Name, Last Name — handle appropriately
+- **Input folders** keep exports organized and prevent filename collisions from CaseWorthy
 
 ## Formatting Spec
 
@@ -130,17 +138,17 @@ Tab order: All, Charlotte, Charlotte Shelter, FOX, GPD, MidFlorida, Orlando, Pas
 |---------|-------|
 | Header row | Bold, white text (#FFFFFF), dark blue background (#1B3A5C), frozen |
 | Data rows | Black text (#333333), white background |
-| Alternating rows | Optional light gray (#F2F6FA) |
+| Alternating rows | Light gray (#F2F6FA) |
 | Date columns | MM/DD/YYYY format (Begin Date, Move-In Date, Last 90 Day Recert) |
 | Column widths | Auto-fit, minimum 8 chars; Program Name ~40 chars |
 
 ## Error Handling
 
-- Validate all 68 expected columns in Data Report Card — raise clear error if missing/renamed
-- Warn (don't fail) if Client Not Served has fewer than 25 header rows
-- Log unmatched legal referral and client-not-served lookup counts for QA
+- Validate critical columns in Data Report Card (Event, Client ID, Program Name, Case Manager, Last Case Note Date Per Prog) — raise clear error if missing
+- Log unmatched legal referral lookup counts for QA
 - Log row count per site tab for verification
 - Log any unmatched program name prefixes (clients only on All tab) as warnings
+- Auto-detect .xlsx files in input folders; error if none found or multiple found
 
 ## Validation Checklist
 
@@ -150,11 +158,11 @@ Tab order: All, Charlotte, Charlotte Shelter, FOX, GPD, MidFlorida, Orlando, Pas
 - [ ] Non-SSVF programs show N/A for SOAR, ShallowSub, HUDVASH
 - [ ] Non-RRH programs show N/A for Housed/Not Housed
 - [ ] FOX tab has exactly 12 columns (includes PQI Review and Peer Review)
-- [ ] PQI Review: only 'Yes' or blank
-- [ ] Peer Review: only 'Yes' or blank
+- [ ] PQI Review: only 'Yes', 'No', or blank
+- [ ] Peer Review: only 'Yes', 'No', or blank
 - [ ] MidFlorida tab has 20 columns (19 + Location at position 10)
 - [ ] Legal Assistance shows 'Received' only for approved referrals
-- [ ] Days With no Service/Contact matches source data
+- [ ] Days With no Service/Contact = TODAY() - Last Case Note Date Per Prog
 - [ ] All dates formatted MM/DD/YYYY (no time components)
 - [ ] Headers frozen on every tab
 
@@ -162,6 +170,5 @@ Tab order: All, Charlotte, Charlotte Shelter, FOX, GPD, MidFlorida, Orlando, Pas
 
 1. **New office/program detection** — Log unmatched prefixes as warnings (Medium priority)
 2. **Conditional formatting for Recert** — Red (>=90 days), Yellow (70-89), Green (<70), Gray (none) (Low priority)
-3. **Auto-detect Client Not Served header row** — Find 'Client ID' text instead of assuming row 25 (High priority)
-4. **Non-SSVF list maintenance** — Consider deriving from program name patterns vs hardcoded list (Medium priority)
-5. **SSRS replacement (Phase 2)** — Long-term goal to replace with a single SSRS report (Future)
+3. **Non-SSVF list maintenance** — Consider deriving from program name patterns vs hardcoded list (Medium priority)
+4. **SSRS replacement (Phase 2)** — Long-term goal to replace with a single SSRS report (Future)
