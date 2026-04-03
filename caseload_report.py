@@ -14,6 +14,7 @@ Place input files in these folders (script auto-detects .xlsx files):
 """
 
 import argparse
+import csv
 import glob
 import logging
 import os
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 # Input folder paths (relative to script directory)
 INPUT_DIR_DATA_REPORT_CARD = os.path.join("input", "data_report_card")
 INPUT_DIR_LEGAL_REFERRAL = os.path.join("input", "legal_referral")
+CONFIG_DIR_STAFF_ROSTER = os.path.join("config", "staff_roster")
+CONFIG_SITE_TAB_MAPPING = os.path.join("config", "site_tab_mapping.csv")
 OUTPUT_DIR = "output"
 
 # Column renames applied to the Data Report Card
@@ -59,6 +62,7 @@ KEEP_COLUMNS_FROM_DRC = [
     "Days Enrolled",
     "Move-In Date",
     "Assigned Staff",
+    "Staff Job Type",
     "Days since Last Recert/Update",
     "Current Receive ShallowSub",
     "Referred From HUDVASH",
@@ -68,7 +72,7 @@ KEEP_COLUMNS_FROM_DRC = [
     "Peer Review",
 ]
 
-# The 19 output columns in exact order for the "All" tab
+# The 20 output columns in exact order for the "All" tab
 ALL_COLUMNS_ORDERED = [
     "Client ID",
     "First Name",
@@ -79,6 +83,7 @@ ALL_COLUMNS_ORDERED = [
     "Days Enrolled",
     "Move-In Date",
     "Assigned Staff",
+    "Staff Job Type",
     "Last 90 Day Recert",
     "Days since Last Recert/Update",
     "Current Receive ShallowSub",
@@ -213,6 +218,86 @@ def find_xlsx_in_folder(folder_path):
 # ---------------------------------------------------------------------------
 
 
+def load_staff_roster():
+    """Load the staff roster from config/staff_roster/ if available.
+
+    Maps Login Name → (Last Name, First Name, Job Type) for resolving
+    abbreviated staff names in the Data Report Card.
+
+    Returns:
+        dict or None: {login_name: {"full_name": "Last, First", "job_type": "..."}}
+        Returns None if no roster file is found.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    roster_dir = os.path.join(script_dir, CONFIG_DIR_STAFF_ROSTER)
+
+    if not os.path.isdir(roster_dir):
+        logger.info("No staff roster folder found — using raw staff names")
+        return None
+
+    xlsx_files = glob.glob(os.path.join(roster_dir, "*.xlsx"))
+    xlsx_files = [f for f in xlsx_files if not os.path.basename(f).startswith("~$")]
+
+    if not xlsx_files:
+        logger.info("No staff roster file found in %s — using raw staff names", roster_dir)
+        return None
+
+    if len(xlsx_files) > 1:
+        logger.warning("Multiple files in %s — using first: %s", roster_dir, xlsx_files[0])
+
+    filepath = xlsx_files[0]
+    logger.info("Reading staff roster: %s", filepath)
+    df = pd.read_excel(filepath, engine="openpyxl")
+    df.columns = df.columns.str.strip()
+
+    required = ["Login Name", "Last Name", "First Name"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        logger.warning("Staff roster missing columns %s — skipping staff mapping", missing)
+        return None
+
+    roster = {}
+    for _, row in df.iterrows():
+        login = str(row["Login Name"]).strip()
+        if not login or login == "nan":
+            continue
+        last = str(row.get("Last Name", "")).strip()
+        first = str(row.get("First Name", "")).strip()
+        job_type = str(row.get("Job Type", "")).strip() if "Job Type" in df.columns else ""
+        if job_type == "nan":
+            job_type = ""
+        roster[login] = {
+            "full_name": f"{last}, {first}" if last and first else login,
+            "job_type": job_type,
+        }
+
+    logger.info("  Loaded %d staff entries", len(roster))
+    return roster
+
+
+def load_site_tab_mapping():
+    """Load site tab mapping from config/site_tab_mapping.csv if available.
+
+    Returns:
+        list of dicts or None: Each dict has keys: tab_name, match_type, match_value.
+        Returns None if the file doesn't exist (falls back to hardcoded filters).
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(script_dir, CONFIG_SITE_TAB_MAPPING)
+
+    if not os.path.isfile(csv_path):
+        return None
+
+    rows = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+
+    logger.info("Loaded site tab mapping: %d rules from %s", len(rows), csv_path)
+    return rows
+
+
 def load_data_report_card(filepath):
     """Load and validate the Data Report Card export.
 
@@ -286,22 +371,50 @@ def load_legal_referral(filepath):
 # ---------------------------------------------------------------------------
 
 
-def process_main_sheet(drc, office_location, legal):
+def process_main_sheet(drc, office_location, legal, staff_roster=None):
     """Process the main 'All' sheet.
 
     Args:
         drc: Raw Data Report Card DataFrame
         office_location: Series of Current Office Location values (aligned to drc index)
         legal: Cleaned Legal Services Referral DataFrame
+        staff_roster: Optional dict mapping login names to full names and job types
 
     Returns:
-        tuple: (Processed All-tab DataFrame with 19 columns, aligned office_location Series)
+        tuple: (Processed All-tab DataFrame, aligned office_location Series)
     """
     df = drc.copy()
 
     # ── Step 1: Rename columns and replace Event values ──
     df.rename(columns=COLUMN_RENAMES, inplace=True)
     df["Event"] = df["Event"].replace("At Exit", "ZAT Exit")
+
+    # ── Step 1b: Map staff login names to full names + job type ──
+    if staff_roster and "Assigned Staff" in df.columns:
+        def resolve_staff(login_val):
+            if pd.isna(login_val):
+                return login_val
+            login = str(login_val).strip()
+            if login in staff_roster:
+                return staff_roster[login]["full_name"]
+            return login_val
+
+        def resolve_job_type(login_val):
+            if pd.isna(login_val):
+                return ""
+            login = str(login_val).strip()
+            if login in staff_roster:
+                return staff_roster[login]["job_type"]
+            return ""
+
+        # Resolve before overwriting — need original login names for lookup
+        df["Staff Job Type"] = df["Assigned Staff"].apply(resolve_job_type)
+        df["Assigned Staff"] = df["Assigned Staff"].apply(resolve_staff)
+
+        matched = (df["Staff Job Type"] != "").sum()
+        logger.info("Staff roster: %d/%d staff names resolved", matched, len(df))
+    else:
+        df["Staff Job Type"] = ""
 
     # ── Step 2: Sort and deduplicate ──
     df.sort_values(by=["Event", "Client ID", "Program Name"], inplace=True)
@@ -345,10 +458,10 @@ def process_main_sheet(drc, office_location, legal):
 
         df["Last 90 Day Recert"] = df["Days since Last Recert/Update"].apply(calc_recert)
 
-        # Insert at position 9 (after Assigned Staff, before Days since Last Recert/Update)
+        # Insert at position 10 (after Staff Job Type, before Days since Last Recert/Update)
         cols = list(df.columns)
         cols.remove("Last 90 Day Recert")
-        cols.insert(9, "Last 90 Day Recert")
+        cols.insert(10, "Last 90 Day Recert")
         df = df[cols]
     else:
         logger.warning("'Days since Last Recert/Update' not found — Last 90 Day Recert will be blank")
@@ -463,12 +576,60 @@ def _normalize_yes_no(value):
     return "Yes"
 
 
-def create_site_tabs(df_all, office_location):
-    """Create the 16 site tabs from the All sheet data.
+def _build_filters_from_csv(mapping_rows, pn, ol, index):
+    """Build site tab filter masks from CSV mapping rules.
+
+    Supports match types:
+        prefix            — Program Name starts with value
+        contains          — Program Name contains value (case-insensitive)
+        location_contains — Current Office Location contains value (case-insensitive)
+        exclude_contains  — Exclude rows where Program Name contains value
+        require_contains  — Require rows where Program Name contains value
+
+    Multiple rules for the same tab are OR'd together (except exclude/require
+    which are AND'd as modifiers).
+    """
+    # Group rules by tab name
+    tab_rules = OrderedDict()
+    for row in mapping_rows:
+        tab = row["tab_name"]
+        if tab not in tab_rules:
+            tab_rules[tab] = []
+        tab_rules[tab].append(row)
+
+    filters = {}
+    for tab_name, rules in tab_rules.items():
+        include_mask = pd.Series(False, index=index)
+        exclude_mask = pd.Series(False, index=index)
+        require_mask = pd.Series(True, index=index)
+
+        for rule in rules:
+            mt = rule["match_type"]
+            mv = rule["match_value"]
+
+            if mt == "prefix":
+                include_mask = include_mask | pn.str.startswith(mv)
+            elif mt == "contains":
+                include_mask = include_mask | pn.str.contains(mv, case=False, na=False)
+            elif mt == "location_contains":
+                include_mask = include_mask | ol.str.contains(mv, case=False, na=False)
+            elif mt == "exclude_contains":
+                exclude_mask = exclude_mask | pn.str.contains(mv, case=False, na=False)
+            elif mt == "require_contains":
+                require_mask = require_mask & pn.str.contains(mv, case=False, na=False)
+
+        filters[tab_name] = include_mask & ~exclude_mask & require_mask
+
+    return filters
+
+
+def create_site_tabs(df_all, office_location, site_tab_mapping=None):
+    """Create site tabs from the All sheet data.
 
     Args:
-        df_all: Processed All-tab DataFrame (19 columns)
+        df_all: Processed All-tab DataFrame
         office_location: Series of Location values aligned to df_all
+        site_tab_mapping: Optional list of mapping rules from CSV config
 
     Returns:
         OrderedDict of {tab_name: DataFrame} in SITE_TAB_ORDER
@@ -476,26 +637,30 @@ def create_site_tabs(df_all, office_location):
     pn = df_all["Program Name"].fillna("")
     ol = office_location.fillna("")
 
-    # Define filter masks for each site tab
-    filters = {
-        "All": pd.Series(True, index=df_all.index),
-        "Charlotte": pn.str.startswith("Charlotte") & ~pn.str.contains("Care Center"),
-        "Charlotte Shelter": pn.str.startswith("Charlotte") & pn.str.contains("Care Center"),
-        "Citrus": ol.str.contains("Citrus", case=False, na=False),
-        "FOX": pn.str.startswith("All-County-VA-Suicide") | pn.str.startswith("Bob Woodruff"),
-        "GPD": pn.str.startswith("Pre-Housing") | pn.str.startswith("Retention"),
-        "Lake": ol.str.contains("Lake", case=False, na=False),
-        "Orlando": pn.str.startswith("Orlando"),
-        "Pasco": pn.str.startswith("Pasco"),
-        "Pinellas": pn.str.startswith("Pinellas"),
-        "Polk": pn.str.startswith("Polk"),
-        "PSH": pn.str.contains("PSH", case=False, na=False),
-        "San Juan": pn.str.startswith("San Juan"),
-        "Sarasota": pn.str.startswith("Sarasota"),
-        "Sebring": pn.str.startswith("Sebring"),
-        "SouthWest": pn.str.startswith("SouthWest"),
-        "Tampa": pn.str.startswith("Tampa"),
-    }
+    # Build filter masks — from CSV config if available, otherwise hardcoded
+    if site_tab_mapping:
+        filters = _build_filters_from_csv(site_tab_mapping, pn, ol, df_all.index)
+    else:
+        filters = {
+            "Charlotte": pn.str.startswith("Charlotte") & ~pn.str.contains("Care Center"),
+            "Charlotte Shelter": pn.str.startswith("Charlotte") & pn.str.contains("Care Center"),
+            "Citrus": ol.str.contains("Citrus", case=False, na=False),
+            "FOX": pn.str.startswith("All-County-VA-Suicide") | pn.str.startswith("Bob Woodruff"),
+            "GPD": pn.str.startswith("Pre-Housing") | pn.str.startswith("Retention"),
+            "Lake": ol.str.contains("Lake", case=False, na=False),
+            "Orlando": pn.str.startswith("Orlando"),
+            "Pasco": pn.str.startswith("Pasco"),
+            "Pinellas": pn.str.startswith("Pinellas"),
+            "Polk": pn.str.startswith("Polk"),
+            "PSH": pn.str.contains("PSH", case=False, na=False),
+            "San Juan": pn.str.startswith("San Juan"),
+            "Sarasota": pn.str.startswith("Sarasota"),
+            "Sebring": pn.str.startswith("Sebring"),
+            "SouthWest": pn.str.startswith("SouthWest"),
+            "Tampa": pn.str.startswith("Tampa"),
+        }
+
+    filters["All"] = pd.Series(True, index=df_all.index)
 
     tabs = OrderedDict()
 
@@ -635,13 +800,17 @@ def main(data_report_card=None, legal_referral=None, output_path=None):
     drc, office_location = load_data_report_card(data_report_card)
     legal = load_legal_referral(legal_referral)
 
+    # Load config files
+    staff_roster = load_staff_roster()
+    site_tab_mapping = load_site_tab_mapping()
+
     # Process the main sheet
     logger.info("Processing main sheet...")
-    df_all, office_loc_aligned = process_main_sheet(drc, office_location, legal)
+    df_all, office_loc_aligned = process_main_sheet(drc, office_location, legal, staff_roster)
 
     # Create site tabs
     logger.info("Creating site tabs...")
-    tabs = create_site_tabs(df_all, office_loc_aligned)
+    tabs = create_site_tabs(df_all, office_loc_aligned, site_tab_mapping)
 
     # Write to Excel
     logger.info("Writing output to %s", output_path)

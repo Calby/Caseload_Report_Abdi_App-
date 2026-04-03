@@ -1,0 +1,21 @@
+tab_name,match_type,match_value
+Charlotte,prefix,Charlotte
+Charlotte,exclude_contains,Care Center
+Charlotte Shelter,prefix,Charlotte
+Charlotte Shelter,require_contains,Care Center
+Citrus,location_contains,Citrus
+FOX,prefix,All-County-VA-Suicide
+FOX,prefix,Bob Woodruff
+GPD,prefix,Pre-Housing
+GPD,prefix,Retention
+Lake,location_contains,Lake
+Orlando,prefix,Orlando
+Pasco,prefix,Pasco
+Pinellas,prefix,Pinellas
+Polk,prefix,Polk
+PSH,contains,PSH
+San Juan,prefix,San Juan
+Sarasota,prefix,Sarasota
+Sebring,prefix,Sebring
+SouthWest,prefix,SouthWest
+Tampa,prefix,Tampa
