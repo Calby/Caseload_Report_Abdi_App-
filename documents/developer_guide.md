@@ -133,6 +133,66 @@ The GUI is a single `CaseloadReportApp` class. Key methods:
   - `location_contains` — Office Location contains value
   - `exclude_contains` — Exclude programs containing value
   - `require_contains` — Require programs containing value
+- **Program exclusions**: Edit `config/program_exclusions.xlsx` (see below)
+
+### Program Exclusions (`config/program_exclusions.xlsx`)
+
+This Excel file controls which programs get SSVF-related fields blanked out
+(SOAR, ShallowSub, HUDVASH, Recert) and which programs should be silenced
+from heuristic warnings. **No code changes or rebuild needed** — just edit
+the Excel and re-run.
+
+#### Columns
+
+| Column | Required | Description |
+|--------|----------|-------------|
+| Program Name | Yes | The program name or keyword to match |
+| Exclusion Type | Yes | What action to take (see below) |
+| Match Type | No | `exact` (default) or `contains` |
+| Notes | No | Free-text description (informational only) |
+
+#### Exclusion Types
+
+| Exclusion Type | Effect |
+|----------------|--------|
+| `non_ssvf` | Blanks out SOAR, ShallowSub, HUDVASH, Last 90 Day Recert, and Days since Last Recert/Update for matching programs |
+| `skip_ssvf_warning` | Suppresses the log warning for programs that don't match SSVF keywords. Does not change any data. |
+
+#### Match Types
+
+| Match Type | How it works | Example |
+|------------|-------------|---------|
+| `exact` | Program Name must match the value exactly | `Tampa-THHI-CDBG DAP CES 1107` matches only that one program |
+| `contains` | Program Name contains the value (case-insensitive) | `EHA` matches `Charlotte-VA Supportive Services-SSVF-EHA`, `Orlando-SSVF-EHA`, etc. |
+
+If the Match Type column is missing or blank, it defaults to `exact`.
+
+#### Examples
+
+| Program Name | Exclusion Type | Match Type | Notes |
+|---|---|---|---|
+| All-County-VA-Suicide-Prevention 1114 | non_ssvf | exact | Specific program |
+| Charlotte County-SHIP-RRH 1305 | non_ssvf | exact | SHIP program |
+| Tampa-THHI-CDBG DAP CES 1107 | non_ssvf | exact | CDBG program |
+| EHA | non_ssvf | contains | All EHA programs |
+| Some Known Program | skip_ssvf_warning | exact | Suppress warning only |
+
+#### Common Tasks
+
+**Add a specific program to exclude:**
+1. Open `config/program_exclusions.xlsx` in Excel
+2. Add a row: Program Name = full program name, Exclusion Type = `non_ssvf`, Match Type = `exact`
+3. Save and re-run
+
+**Exclude all programs matching a keyword:**
+1. Add a row: Program Name = the keyword (e.g., `SHIP`), Exclusion Type = `non_ssvf`, Match Type = `contains`
+2. This will match any program with that keyword anywhere in its name
+
+**Stop a warning from appearing:**
+1. Add a row: Program Name = the program name, Exclusion Type = `skip_ssvf_warning`, Match Type = `exact`
+2. The program will still be processed normally, but the warning log will be suppressed
+
+**Fallback:** If the Excel file is missing or has the wrong columns, the script falls back to a hardcoded list of 3 programs built into the code.
 
 ---
 
